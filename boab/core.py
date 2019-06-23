@@ -35,14 +35,10 @@ Save models
 
 
 """
-import os
+iimport os
 import pandas as pd 
 import re
-
-
-import os
-import pandas as pd 
-import re
+import numpy as np
 
 
 class Boab(object):
@@ -53,6 +49,11 @@ class Boab(object):
         self.df = pd.DataFrame([])
         self.time_cols = []
         self.date_cols = []
+        self.models = []
+        self.X_train = None
+        self.X_test  = None
+        self.y_train = None
+        self.y_test  = None
         return super().__init__(*args, **kwargs)
     
     def __str__(self):
@@ -63,6 +64,10 @@ class Boab(object):
 
     def head(self):
         print(self.df.head())
+    
+    @property
+    def columns(self):
+        return self.df.columns
         
     def fix_col_names(self):
         """
@@ -109,7 +114,7 @@ class Boab(object):
         return date_cols
         
 
-    def fix_types(self):
+    def fix_types(self, french_decs=None):
         """
         Fix data types to_numeric, to_datetime
         Look at top 100 rows of each col and decide on a
@@ -142,6 +147,15 @@ class Boab(object):
                 except:
                     self.df[c] = pd.to_datetime(self.df[c], format='%d/%m/%y %H.%M.%S')
                     
+        ############################
+        # FIX FRENCH DECIMALS
+        ############################
+        if french_decs:
+            self.french_dec_english(french_decs)
+        
+        ############################
+        # FIX DATE AND TIME COLUMNS
+        ############################
         
         # Look for date columns
         self.date_cols = self.__which_date_col(self.df.columns)
@@ -166,6 +180,22 @@ class Boab(object):
         # Infer Objects
         self.df.infer_objects()
         
+        
+        # Do any columns contan 'nan'?
+        # if so then fix
+        for c in self.df.columns:
+            # For string columns
+            if self.df[c].dtype == object:
+                print('Column:', c)
+                mask = self.df[c] == 'nan'
+                print('Number nans:', mask.shape[0])
+
+                if mask.shape[0] > 0:
+                    # Replace the nans
+                    self.df.loc[mask, c] = np.NaN
+                    # Convert to numeric
+                    self.df[c] = pd.to_numeric(self.df[c])
+        
         return self
     
     def fix_missing(self):
@@ -187,6 +217,14 @@ class Boab(object):
         
         # Drop the columns
         self.df.drop(drop_cols, axis=1, inplace=True)
+        
+        # If there are <20% missing then impute the column
+        for c in self.df.columns:
+            # Numeric Columns
+            if(self.df[c].dtype == np.float64 or self.df[c].dtype == np.int64):
+                print('Column:', c, 'Numeric')
+                # for each numeric col do mean imputation
+                self.df.loc[self.df[c].isnull(), c] = self.df[c].mean()
                                  
         return self
                
@@ -225,19 +263,123 @@ class Boab(object):
             # If there is a time component then extract hour
             if self.is_time_componet(d):
                 self.df['_'.join([d, 'hour'])] = self.df[d].dt.hour
-
+                
+    def build_regression(self, feature_list, target, model_list=['ridge']):
+        """
+        Takes features and target
+        Does train test split
+        Reports on preformance 
+        Returns: model
+        """
         
+        # Fix missing values
+        print('\n[INFO] Imputing missing values')
+        self.fix_missing()
+        print('\nMissing Values:')
+        print(bo.df.isna().sum())
+        
+        seed = 4784
+        
+        from sklearn.model_selection import train_test_split
+        X = self.df[feature_list]
+        y = self.df[target]
+        
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, random_state=seed)
+        
+        for m in model_list:
+            if m == 'ridge':
+                from sklearn.linear_model import RidgeCV
+                # Choosing a CV number
+                if self.df.shape[0] > 100:
+                    cv = 3
+                elif self.df.shape[0] > 500:
+                    cv = 5
+                else:
+                    cv = 1
+                
+                model = RidgeCV(alphas=(0.1, 1.0, 10.0), cv=cv)
+                model.fit(self.X_train, self.y_train)
+                print('\nRidge Regression R-squared:', model.score(self.X_test, self.y_test))
+                # Add the model to the output list
+                self.models.append(model)
+                
+    def build_ts_regression(self, feature_list, target, dt_index, model_list=['ridge']):
+        """
+        Takes features and target
+        Does train test split
+        Reports on preformance 
+        Returns: model
+        """
+        
+        # Fix missing values
+        print('\n[INFO] Imputing missing values')
+        self.fix_missing()
+        print('\nMissing Values:')
+        print(bo.df.isna().sum())
+        
+        test_size = 0.3
+        
+        self.df.sort_values(dt_index, ascending=True, inplace=True)
+        nrows = self.df.shape[0]
+        train_idx = int(nrows*(1-test_size))
+        test_idx = nrows - train_idx
+                
+        X = self.df[feature_list]
+        y = self.df[target]
+        
+        self.X_train = X.iloc[0:train_idx]
+        self.X_test =  X.iloc[0:test_idx]    
+        self.y_train = y.iloc[0:train_idx]
+        self.y_test =  y.iloc[0:test_idx]    
+        
+        print('Xtrain size:', self.X_train.shape[0], 'Xtest size:', self.X_test.shape[0])
+        
+        for m in model_list:
+            if m == 'ridge':
+                from sklearn.linear_model import RidgeCV
+                # Choosing a CV number
+                if self.df.shape[0] > 100:
+                    cv = 3
+                elif self.df.shape[0] > 500:
+                    cv = 5
+                else:
+                    cv = 1
+                
+                model = RidgeCV(alphas=(0.1, 1.0, 10.0), cv=cv)
+                model.fit(self.X_train, self.y_train)
+                print('\nRidge Regression R-squared:', model.score(self.X_test, self.y_test))    
+                # Add the model to the output list
+                self.models.append(model)
+        
+                                 
+############################################################
+### End Class
+############################################################
                                  
 ############################################################
 ### API
 ############################################################
 bo = Boab()
 bo.load_data('boab-data-science/boab/AirQualityUCI.csv', sep=';')
-bo.fix_types()
+bo.fix_types(french_decs=['co_gt_', 'c6h6_gt_', 't', 'rh', 'ah'])
 bo.fix_missing()
-bo.french_dec_english(['co_gt_', 'c6h6_gt_', 't', 'rh', 'ah'])
+# bo.french_dec_english(['co_gt_', 'c6h6_gt_', 't', 'rh', 'ah'])
 bo.make_discrete_datetime_cols()
 bo.df.head()
+
+# Build normal regression
+feature_list = ['pt08_s1_co_', 'nmhc_gt_', 'c6h6_gt_',
+       'pt08_s2_nmhc_', 'nox_gt_', 'pt08_s3_nox_', 'no2_gt_', 'pt08_s4_no2_',
+       'pt08_s5_o3_', 't', 'rh', 'ah', 'date_day', 'date_month', 'date_year']
+target = 'co_gt_'
+bo.build_regression(feature_list=feature_list, target=target)
+
+# Build Timeseries regression
+feature_list = ['pt08_s1_co_', 'nmhc_gt_', 'c6h6_gt_',
+       'pt08_s2_nmhc_', 'nox_gt_', 'pt08_s3_nox_', 'no2_gt_', 'pt08_s4_no2_',
+       'pt08_s5_o3_', 't', 'rh', 'ah', 'date_day', 'date_month', 'date_year']
+target = 'co_gt_'
+bo.build_ts_regression(feature_list=feature_list, target=target, dt_index='date')
 
 #
 # CODE
