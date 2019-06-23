@@ -40,12 +40,19 @@ import pandas as pd
 import re
 
 
+import os
+import pandas as pd 
+import re
+
+
 class Boab(object):
     """
     Class Desc
     """
     def __init__(self, *args, **kwargs):
         self.df = pd.DataFrame([])
+        self.time_cols = []
+        self.date_cols = []
         return super().__init__(*args, **kwargs)
     
     def __str__(self):
@@ -54,7 +61,9 @@ class Boab(object):
     def __repr__(self):
         return str(self.df.head())
 
-
+    def head(self):
+        print(self.df.head())
+        
     def fix_col_names(self):
         """
         fix column names (remove capitals, spaces, dots, symbols)
@@ -80,6 +89,25 @@ class Boab(object):
             self.df = pd.read_excel(filename)
             # return self.df
         self.fix_col_names()
+        
+    def __which_time_col(self, cols):
+        # Look for date columns
+        time_cols = []
+        for i, c in enumerate(cols):
+            match_obj = re.match("time", c, flags=re.IGNORECASE)
+            if match_obj:
+                time_cols.append(match_obj.group())
+        return time_cols
+
+    def __which_date_col(self, cols):
+        # Look for date columns
+        date_cols = []
+        for i, c in enumerate(cols):
+            match_obj = re.match("datetime|date|dte", c, flags=re.IGNORECASE)
+            if match_obj:
+                date_cols.append(match_obj.group())
+        return date_cols
+        
 
     def fix_types(self):
         """
@@ -87,29 +115,12 @@ class Boab(object):
         Look at top 100 rows of each col and decide on a
         data type, if number rows < 100 then use all rows
         """        
-        def which_date_col(cols):
-            # Look for date columns
-            date_cols = []
-            for i, c in enumerate(cols):
-                match_obj = re.match("date|dte", c, flags=re.IGNORECASE)
-                if match_obj:
-                    date_cols.append(match_obj.group())
-            return date_cols
-        
-        def which_time_col(cols):
-            # Look for date columns
-            time_cols = []
-            for i, c in enumerate(cols):
-                match_obj = re.match("time", c, flags=re.IGNORECASE)
-                if match_obj:
-                    time_cols.append(match_obj.group())
-            return time_cols
-        
-        def fix_time_cols(time_cols):
+ 
+        def fix_time_cols(self):
             # Fix TIme Columns
             try:
                 # fix time cols
-                for c in time_cols:
+                for c in self.time_cols:
                     self.df[c] = pd.to_datetime(self.df[c], format='%H:%M:%S')
             except:
                 pass
@@ -117,25 +128,40 @@ class Boab(object):
             # Fix TIme Columns
             try:
                 # fix time cols
-                for c in time_cols:
+                for c in self.time_cols:
                     self.df[c] = pd.to_datetime(self.df[c], format='%H.%M.%S')
             except:
                 pass
+            
+        def fix_date_cols(self):
+            # fix date cols
+            # for cols in date_cols do pd.to_datetime()
+            for c in self.date_cols:
+                try:
+                    self.df[c] = pd.to_datetime(self.df[c])
+                except:
+                    self.df[c] = pd.to_datetime(self.df[c], format='%d/%m/%y %H.%M.%S')
+                    
         
         # Look for date columns
-        date_cols = which_date_col(self.df.columns)
+        self.date_cols = self.__which_date_col(self.df.columns)
         
         # fix date cols
         # for cols in date_cols do pd.to_datetime()
-        for c in date_cols:
-            self.df[c] = pd.to_datetime(self.df[c])
+        # for c in self.date_cols:
+        #     self.df[c] = pd.to_datetime(self.df[c])
         
+        # fix date cols
+        fix_date_cols(self)
         
         # Look for time columns
-        time_cols = which_time_col(self.df.columns)
+        self.time_cols = self.__which_time_col(self.df.columns)
+        
+        # Remove Date Cols from Time Cols
+        self.time_cols = list(set(self.time_cols) - set(self.date_cols))
         
         # Fix time columns
-        fix_time_cols(time_cols)
+        fix_time_cols(self)
         
         # Infer Objects
         self.df.infer_objects()
@@ -172,18 +198,46 @@ class Boab(object):
             self.df[c] = self.df[c].apply(lambda x: str(x).replace(',','.'))
         
         return self
+    
+    def is_time_componet(self, colname):
+        # There is no time component
+        if self.df[colname].dt.hour.sum() == 0 and self.df[colname].dt.minute.sum() == 0 and self.df[colname].dt.second.sum() == 0 and self.df[colname].dt.microsecond.sum() == 0:
+            return False
+        # There IS a time component
+        else:
+            return True
+    
+    def make_discrete_datetime_cols(self, verbose=False):
+        # Look for date columns
+        self.date_cols = self.__which_date_col(self.df.columns)
+        # Look for time columns
+        self.time_cols = self.__which_time_col(self.df.columns)
+        
+        if verbose:
+            print('Date columns:', self.date_cols, 'Time columns', self.time_cols )
+            
+        for d in self.date_cols:
+            # append col name as prefix
+            self.df['_'.join([d, 'day'])] = self.df[d].dt.day
+            self.df['_'.join([d, 'month'])] = self.df[d].dt.month
+            self.df['_'.join([d, 'year'])] = self.df[d].dt.year
+            
+            # If there is a time component then extract hour
+            if self.is_time_componet(d):
+                self.df['_'.join([d, 'hour'])] = self.df[d].dt.hour
+
+        
                                  
 ############################################################
-### End Class
+### API
 ############################################################
-
 bo = Boab()
-bo.load_data('AirQualityUCI.csv', sep=';')
+bo.load_data('boab-data-science/boab/AirQualityUCI.csv', sep=';')
 bo.fix_types()
 bo.fix_missing()
 bo.french_dec_english(['co_gt_', 'c6h6_gt_', 't', 'rh', 'ah'])
-print(bo.df.head())
-
+bo.make_discrete_datetime_cols()
+bo.df.head()
 
 #
 # CODE
